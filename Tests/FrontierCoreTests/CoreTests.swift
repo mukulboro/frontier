@@ -285,3 +285,73 @@ func approx(_ a: Double, _ b: Double, _ eps: Double = 1e-9) -> Bool { abs(a - b)
         if let w = s.wifi { #expect((0...1).contains(w)) }
     }
 }
+
+@Suite struct CampTests {
+    @Test func skyFollowsTheClock() {
+        #expect(SkyPhase.at(hour: 0) == .night)
+        #expect(SkyPhase.at(hour: 4.99) == .night)
+        #expect(SkyPhase.at(hour: 5) == .dawn)
+        #expect(SkyPhase.at(hour: 7.5) == .day)
+        #expect(SkyPhase.at(hour: 12) == .day)
+        #expect(SkyPhase.at(hour: 17) == .dusk)
+        #expect(SkyPhase.at(hour: 19.5) == .night)
+        #expect(SkyPhase.at(hour: 23.99) == .night)
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        let six = cal.date(from: DateComponents(year: 2026, month: 11, day: 17, hour: 6, minute: 10))!
+        #expect(SkyPhase.at(six, calendar: cal) == .dawn)
+    }
+
+    @Test func upgradesUnlockInOrder() {
+        #expect(CampUpgrade.unlocked(renown: 0).isEmpty)
+        #expect(CampUpgrade.unlocked(renown: 0.99).isEmpty)
+        #expect(CampUpgrade.unlocked(renown: 1) == [.choppingBlock])
+        #expect(CampUpgrade.unlocked(renown: 6.5) == [.choppingBlock, .lantern, .tent])
+        #expect(CampUpgrade.unlocked(renown: 99) == CampUpgrade.allCases)
+        let t = CampUpgrade.allCases.map(\.threshold)
+        #expect(t == t.sorted() && Set(t).count == t.count)
+    }
+
+    @Test func progressTowardTheNextUpgrade() {
+        let a = CampUpgrade.next(renown: 0.5)!
+        #expect(a.upgrade == .choppingBlock && approx(a.progress, 0.5))
+        let b = CampUpgrade.next(renown: 4)!           // between lantern (3) and tent (6)
+        #expect(b.upgrade == .tent && approx(b.progress, 1.0 / 3.0))
+        #expect(CampUpgrade.next(renown: 15) == nil)
+    }
+
+    @Test func renownAccumulatesAndNeverFades() {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        var l = Ledger()
+        l.rollover(now: t0, calendar: cal)
+        let a = l.add("a", limit: nil, now: t0)!
+        let gained = l.complete(a.id, now: t0)
+        #expect(approx(l.renown, gained))
+        l.rollover(now: t0.addingTimeInterval(86400 * 30), calendar: cal)
+        #expect(l.honor < gained)                       // honor faded over the month…
+        #expect(approx(l.renown, gained))               // …renown did not
+        let b = l.add("b", limit: 60, now: t0)!
+        l.tick(now: t0.addingTimeInterval(86400))       // losing honor doesn't cost renown either
+        #expect(approx(l.renown, gained))
+        l.complete(b.id, now: t0.addingTimeInterval(86400))
+        let both = l.renown
+        l.uncomplete(b.id)                              // but un-completing hands it back
+        #expect(l.renown < both && l.renown >= 0)
+    }
+
+    @Test func oldStateWithoutRenownStillLoads() throws {
+        let json = #"{"tasks":[],"honor":0.25,"lastDay":"2026-11-17"}"#
+        let l = try JSONDecoder().decode(Ledger.self, from: Data(json.utf8))
+        #expect(l.honor == 0.25 && l.renown == 0)
+    }
+
+    @Test func watchHandSweepsThePhase() {
+        var e = PomodoroEngine(config: PomodoroConfig(focusMinutes: 20, shortBreakMinutes: 5, longBreakMinutes: 10, rounds: 2))
+        #expect(e.progress(now: t0) == 0)
+        e.start(now: t0)
+        #expect(e.progress(now: t0) == 0)
+        #expect(approx(e.progress(now: t0.addingTimeInterval(300)), 0.25))
+        #expect(e.progress(now: t0.addingTimeInterval(5000)) == 1)
+        e.pause(now: t0.addingTimeInterval(600))
+        #expect(approx(e.progress(now: t0.addingTimeInterval(9999)), 0.5))     // frozen while paused
+    }
+}

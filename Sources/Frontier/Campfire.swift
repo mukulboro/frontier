@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import FrontierCore
 import QuartzCore
 
 /// The campfire: real footage of a log fire filmed against black, screen-blended into a painted night
@@ -20,6 +21,7 @@ final class CampfireView: NSView {
     private let ground = CALayer()
     private let halo = CALayer()
     private let coals = CALayer()
+    private let backing = CALayer()
     private let fire = AVPlayerLayer()
     private let fireMask = CAGradientLayer()
     private var player: AVQueuePlayer?
@@ -27,6 +29,9 @@ final class CampfireView: NSView {
     private let phaseLabel = NSTextField(labelWithString: "")
     private let clockLabel = NSTextField(labelWithString: "")
     private var paintedSize = CGSize.zero
+    private var sky = SkyPhase.night
+    private var upgrades: [CampUpgrade] = []
+    private var needsPaint = true
     private var level: CGFloat = 1
     private var paused = false
 
@@ -59,6 +64,7 @@ final class CampfireView: NSView {
         ground.contents = Self.radial(NSColor(hex: 0xFF7A1E))
         halo.contents = Self.radial(NSColor(hex: 0xFF8A2A))
         coals.contents = Self.radial(NSColor(hex: 0xFF4A12))
+        backing.contents = Self.radial(NSColor(hex: 0x060504))
         glow.addSublayer(ground)
         glow.addSublayer(halo)
 
@@ -71,7 +77,7 @@ final class CampfireView: NSView {
         fire.mask = fireMask
         startPlayback()
 
-        for l in [scenery, glow, coals, fire] { root.addSublayer(l) }
+        for l in [scenery, backing, glow, coals, fire] { root.addSublayer(l) }
         glow.add(Self.flicker(low: 0.80, high: 1.0, seed: 11), forKey: "flicker")
         coals.add(Self.flicker(low: 0.72, high: 1.0, seed: 29), forKey: "flicker")
         for label in [phaseLabel, clockLabel] {
@@ -117,21 +123,37 @@ final class CampfireView: NSView {
         CATransaction.setDisableActions(true)
         scenery.frame = b
         glow.frame = b
-        if paintedSize != b.size {
+        if paintedSize != b.size || needsPaint {
             paintedSize = b.size
-            // One pixel per point is plenty for a night scene, and a quarter of the memory of Retina.
-            scenery.contents = Scenery.campSurface(size: b.size)
+            needsPaint = false
+            // One pixel per point is plenty for this scene, and a quarter of the memory of Retina.
+            scenery.contents = Scenery.campSurface(size: b.size, sky: sky, upgrades: upgrades)
+            Res.flushArt()
         }
         ground.frame = CGRect(x: base.x - unit * 0.90, y: base.y - unit * 0.22, width: unit * 1.8, height: unit * 0.42)
         halo.frame = CGRect(x: base.x - unit * 0.75, y: base.y - unit * 0.55, width: unit * 1.5, height: unit * 1.5)
         coals.frame = CGRect(x: base.x - unit * 0.16, y: base.y - unit * 0.035, width: unit * 0.32, height: unit * 0.11)
         let fh = unit * 0.66, fw = fh * Self.clipAspect
+        backing.frame = CGRect(x: base.x - unit * 0.42, y: base.y - unit * 0.16, width: unit * 0.84, height: unit * 0.98)
         fire.frame = CGRect(x: base.x - fw / 2, y: base.y - fh * Self.clipBase, width: fw, height: fh)
         fireMask.frame = fire.bounds
         CATransaction.commit()
         phaseLabel.frame = NSRect(x: 0, y: b.height * 0.255, width: b.width, height: 24)
         clockLabel.frame = NSRect(x: 0, y: b.height * 0.158, width: b.width, height: 84)
         apply(animated: false)
+    }
+
+    /// Sets the time of day and what the camp has earned; repaints only when either changes.
+    func configure(sky: SkyPhase, upgrades: [CampUpgrade]) {
+        guard sky != self.sky || upgrades != self.upgrades else { return }
+        self.sky = sky
+        self.upgrades = upgrades
+        needsPaint = true
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 2.5
+        scenery.add(fade, forKey: "repaint")
+        layoutPieces()
     }
 
     func set(level: Double, animated: Bool = true) {
@@ -153,8 +175,12 @@ final class CampfireView: NSView {
         let cut = 0.34 + 1.20 * l
         fireMask.locations = [0, NSNumber(value: Double(max(0.02, cut - 0.55))), NSNumber(value: Double(cut))]
         fire.opacity = l < 0.012 ? 0.10 : Float(0.40 + 0.60 * pow(l, 0.6))
-        ground.opacity = Float(0.08 + 0.72 * pow(l, 0.75))
-        halo.opacity = Float(0.03 + 0.34 * pow(l, 0.75))
+        // Firelight barely registers against a daytime sky.
+        let pal = Scenery.Palette.of(sky)
+        let k = pal.firelight
+        backing.opacity = Float(pal.backing * (0.45 + 0.55 * l))
+        ground.opacity = Float((0.08 + 0.72 * pow(l, 0.75)) * k)
+        halo.opacity = Float((0.03 + 0.34 * pow(l, 0.75)) * k)
         coals.opacity = Float(0.30 + 0.45 * pow(l, 0.4))
         CATransaction.commit()
     }
@@ -213,57 +239,141 @@ final class CampfireView: NSView {
 
 /// Hand-painted (well, code-painted) scenery shared by the campfire and the honor visions.
 enum Scenery {
-    /// The camp at night: sky, ridges, treeline and bare ground, with a vignette baked in.
-    /// The fire itself, logs included, is real footage laid over this.
-    static func campSurface(size: CGSize) -> IOSurface? {
-        Paint.surface(size: size, scale: 1) {
-            let w = size.width, h = size.height
-            let horizon = h * (CampfireView.baseY + 0.04)
-            NSGradient(colorsAndLocations: (NSColor(hex: 0x120E0C), 0), (NSColor(hex: 0x0C0B10), 0.35),
-                       (NSColor(hex: 0x050609), 1))!
-                .draw(in: NSRect(x: 0, y: horizon, width: w, height: h - horizon), angle: 90)
-            var rng = SeededRNG(seed: 0xCA3F)
-            for _ in 0..<Int(w * h / 5200) {
-                let x = CGFloat.random(in: 0...w, using: &rng)
-                let y = CGFloat.random(in: horizon + h * 0.08...h, using: &rng)
-                let r = CGFloat.random(in: 0.4...1.3, using: &rng)
-                let depth = (y - horizon) / (h - horizon)
-                NSColor(hex: 0xEDE4D2, alpha: CGFloat.random(in: 0.12...0.8, using: &rng) * depth).setFill()
-                NSBezierPath(ovalIn: NSRect(x: x, y: y, width: r * 2, height: r * 2)).fill()
+    /// Colours for one time of day. `sky` runs from the horizon up.
+    struct Palette {
+        let sky: [UInt32]
+        let stars: CGFloat
+        let ridges: [UInt32]
+        let trees: UInt32
+        let ground: [UInt32]            // near edge, then horizon
+        let lit: UInt32                 // the side of camp gear facing the fire
+        let shade: UInt32               // the side facing away
+        let vignette: CGFloat
+        /// How much the firelight shows against this sky.
+        let firelight: CGFloat
+        /// Darkness laid behind the fire. The clip is screen-blended, which can only brighten, so against
+        /// a pale sky the flames wash out and the logs turn into holes unless something dark sits behind them.
+        let backing: CGFloat
+
+        static func of(_ phase: SkyPhase) -> Palette {
+            switch phase {
+            case .night:
+                return Palette(sky: [0x120E0C, 0x0C0B10, 0x050609], stars: 1, ridges: [0x0D0C10, 0x09080A], trees: 0x060506,
+                               ground: [0x030303, 0x0A0806], lit: 0x6E3F1C, shade: 0x0E0906, vignette: 0.75, firelight: 1, backing: 0)
+            case .dusk:
+                return Palette(sky: [0xC9713A, 0x5A3550, 0x141526], stars: 0.35, ridges: [0x2E1E26, 0x180F14], trees: 0x0C0809,
+                               ground: [0x050404, 0x18110C], lit: 0x7A4A24, shade: 0x140D0A, vignette: 0.65, firelight: 0.85, backing: 0.55)
+            case .dawn:
+                return Palette(sky: [0xE2A674, 0x7C6C88, 0x1E2740], stars: 0.12, ridges: [0x3C303A, 0x20181E], trees: 0x110D0F,
+                               ground: [0x080706, 0x1E1813], lit: 0x7A5230, shade: 0x18120E, vignette: 0.6, firelight: 0.7, backing: 0.6)
+            case .day:
+                // A heavy, overcast day: light enough to read as daytime, dark enough for a fire to show.
+                return Palette(sky: [0x6E7672, 0x4C5860, 0x2E3944], stars: 0, ridges: [0x39423E, 0x252B28], trees: 0x141A16,
+                               ground: [0x100F0C, 0x2C2820], lit: 0x54483A, shade: 0x1C1915, vignette: 0.55, firelight: 0.45, backing: 0.8)
             }
-            for (i, color) in [NSColor(hex: 0x0D0C10), NSColor(hex: 0x09080A)].enumerated() {
-                let path = NSBezierPath()
-                path.move(to: NSPoint(x: 0, y: 0))
-                let amp = h * (0.07 - CGFloat(i) * 0.025), baseY = horizon + h * (0.05 - CGFloat(i) * 0.04)
-                let p1 = CGFloat.random(in: 0...6, using: &rng), p2 = CGFloat.random(in: 0...6, using: &rng)
-                var x: CGFloat = 0
-                while x <= w + 8 {
-                    let u = x / w
-                    path.line(to: NSPoint(x: x, y: baseY + amp * (0.55 * sin(u * 5.1 + p1) + 0.3 * sin(u * 12.7 + p2) + 0.15 * sin(u * 31 + p1 * 2))))
-                    x += 8
-                }
-                path.line(to: NSPoint(x: w, y: 0))
-                path.close()
-                color.setFill()
-                path.fill()
-            }
-            // Pines along the horizon, denser at the edges so the fire sits in a clearing.
-            NSColor(hex: 0x060506).setFill()
-            var x: CGFloat = -20
-            while x < w + 20 {
-                let edge = abs(x / w - 0.5) * 2
-                if CGFloat.random(in: 0...1, using: &rng) < 0.25 + 0.75 * pow(edge, 1.5) {
-                    pine(at: NSPoint(x: x, y: horizon - h * 0.012),
-                         height: h * CGFloat.random(in: 0.06...0.13, using: &rng) * (0.55 + 0.9 * edge), rng: &rng)
-                }
-                x += CGFloat.random(in: 14...38, using: &rng)
-            }
-            NSGradient(colorsAndLocations: (NSColor(hex: 0x030303), 0), (NSColor(hex: 0x0A0806), 1))!
-                .draw(in: NSRect(x: 0, y: 0, width: w, height: horizon), angle: 90)
-            NSGradient(colorsAndLocations: (NSColor(white: 0, alpha: 0), 0), (NSColor(white: 0, alpha: 0), 0.55),
-                       (NSColor(white: 0, alpha: 0.75), 1))!
-                .draw(in: NSRect(origin: .zero, size: size), relativeCenterPosition: .zero)
         }
+    }
+
+    /// The camp: sky for the time of day, ridges, treeline, bare ground, and whatever the camp has earned.
+    /// The fire itself, logs included, is real footage laid over this.
+    static func campSurface(size: CGSize, sky: SkyPhase = .night, upgrades: [CampUpgrade] = []) -> IOSurface? {
+        Paint.surface(size: size, scale: 1) { paintCamp(size: size, sky: sky, upgrades: upgrades) }
+    }
+
+    static func campImage(size: CGSize, sky: SkyPhase, upgrades: [CampUpgrade]) -> NSImage {
+        Paint.image(size: size) { paintCamp(size: size, sky: sky, upgrades: upgrades) }
+    }
+
+    private static func paintCamp(size: CGSize, sky phase: SkyPhase, upgrades: [CampUpgrade]) {
+        let pal = Palette.of(phase)
+        let w = size.width, h = size.height
+        let unit = min(w, h)
+        let base = NSPoint(x: w / 2, y: h * CampfireView.baseY)
+        let horizon = h * (CampfireView.baseY + 0.04)
+        NSGradient(colorsAndLocations: (NSColor(hex: pal.sky[0]), 0), (NSColor(hex: pal.sky[1]), 0.35), (NSColor(hex: pal.sky[2]), 1))!
+            .draw(in: NSRect(x: 0, y: horizon, width: w, height: h - horizon), angle: 90)
+        // The RNG is always advanced the same way, so the land keeps its shape from dawn to night.
+        var rng = SeededRNG(seed: 0xCA3F)
+        for _ in 0..<Int(w * h / 5200) {
+            let x = CGFloat.random(in: 0...w, using: &rng)
+            let y = CGFloat.random(in: horizon + h * 0.08...h, using: &rng)
+            let r = CGFloat.random(in: 0.4...1.3, using: &rng)
+            let a = CGFloat.random(in: 0.12...0.8, using: &rng)
+            guard pal.stars > 0 else { continue }
+            let depth = (y - horizon) / (h - horizon)
+            NSColor(hex: 0xEDE4D2, alpha: a * depth * depth.squareRoot() * pal.stars).setFill()
+            NSBezierPath(ovalIn: NSRect(x: x, y: y, width: r * 2, height: r * 2)).fill()
+        }
+        for (i, color) in pal.ridges.enumerated() {
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: 0, y: 0))
+            let amp = h * (0.07 - CGFloat(i) * 0.025), baseY = horizon + h * (0.05 - CGFloat(i) * 0.04)
+            let p1 = CGFloat.random(in: 0...6, using: &rng), p2 = CGFloat.random(in: 0...6, using: &rng)
+            var x: CGFloat = 0
+            while x <= w + 8 {
+                let u = x / w
+                path.line(to: NSPoint(x: x, y: baseY + amp * (0.55 * sin(u * 5.1 + p1) + 0.3 * sin(u * 12.7 + p2) + 0.15 * sin(u * 31 + p1 * 2))))
+                x += 8
+            }
+            path.line(to: NSPoint(x: w, y: 0))
+            path.close()
+            NSColor(hex: color).setFill()
+            path.fill()
+        }
+        // Pines along the horizon, denser at the edges so the fire sits in a clearing.
+        NSColor(hex: pal.trees).setFill()
+        var x: CGFloat = -20
+        while x < w + 20 {
+            let edge = abs(x / w - 0.5) * 2
+            if CGFloat.random(in: 0...1, using: &rng) < 0.25 + 0.75 * pow(edge, 1.5) {
+                pine(at: NSPoint(x: x, y: horizon - h * 0.012),
+                     height: h * CGFloat.random(in: 0.06...0.13, using: &rng) * (0.55 + 0.9 * edge), rng: &rng)
+            }
+            x += CGFloat.random(in: 14...38, using: &rng)
+        }
+        NSGradient(colorsAndLocations: (NSColor(hex: pal.ground[0]), 0), (NSColor(hex: pal.ground[1]), 1))!
+            .draw(in: NSRect(x: 0, y: 0, width: w, height: horizon), angle: 90)
+
+        // Camp gear, back to front. Each piece is lit on the side that faces the fire.
+        for up in CampUpgrade.allCases where upgrades.contains(up) {
+            let (name, dx, dy, height): (String, CGFloat, CGFloat, CGFloat)
+            switch up {
+            case .tent: (name, dx, dy, height) = ("tent", -0.56, 0.005, 0.25)
+            case .wagon: (name, dx, dy, height) = ("wagon", 0.60, 0.012, 0.27)
+            case .provisions: (name, dx, dy, height) = ("barrel", 0.405, -0.030, 0.115)
+            case .lantern: (name, dx, dy, height) = ("lantern", -0.335, -0.045, 0.085)
+            case .choppingBlock: (name, dx, dy, height) = ("chopping-block", 0.30, -0.065, 0.085)
+            }
+            let side = unit * height
+            let rect = NSRect(x: base.x + unit * dx - side / 2, y: base.y + unit * dy - side * 0.06, width: side, height: side)
+            // A soft shadow pooled at its feet seats it on the ground.
+            let foot = NSPoint(x: rect.midX, y: rect.minY + side * 0.07)
+            NSGradient(colorsAndLocations: (NSColor(white: 0, alpha: 0.55), 0), (NSColor(white: 0, alpha: 0), 1))!
+                .draw(fromCenter: foot, radius: 0, toCenter: foot, radius: side * 0.62, options: [])
+            if up == .lantern {
+                let c = NSPoint(x: rect.midX, y: rect.midY)
+                NSGradient(colorsAndLocations: (NSColor(hex: 0xFFC56A, alpha: 0.42 * pal.firelight), 0), (NSColor(hex: 0xFFC56A, alpha: 0), 1))!
+                    .draw(fromCenter: c, radius: 0, toCenter: c, radius: side * 1.5, options: [])
+            }
+            drawLit(name, in: rect, fireOnRight: dx < 0, lit: NSColor(hex: up == .lantern ? 0xE8A552 : pal.lit), shade: NSColor(hex: pal.shade))
+        }
+
+        NSGradient(colorsAndLocations: (NSColor(white: 0, alpha: 0), 0), (NSColor(white: 0, alpha: 0), 0.55),
+                   (NSColor(white: 0, alpha: pal.vignette), 1))!
+            .draw(in: NSRect(origin: .zero, size: size), relativeCenterPosition: .zero)
+    }
+
+    /// Draws a silhouette shaded from a firelit edge to a dark one.
+    private static func drawLit(_ name: String, in rect: NSRect, fireOnRight: Bool, lit: NSColor, shade: NSColor) {
+        let src = Res.art(name)
+        let local = NSRect(origin: .zero, size: rect.size)
+        let tinted = Paint.image(size: rect.size, scale: 2) {
+            src.draw(in: local)
+            NSGraphicsContext.current?.compositingOperation = .sourceAtop
+            NSGradient(colorsAndLocations: (shade, 0), (shade, 0.35), (lit, 1))!
+                .draw(in: local, angle: fireOnRight ? 0 : 180)
+        }
+        tinted.draw(in: rect)
     }
 
     static func pine(at p: NSPoint, height: CGFloat, rng: inout SeededRNG) {

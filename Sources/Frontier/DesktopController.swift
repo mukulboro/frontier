@@ -220,6 +220,7 @@ private final class ScreenSurface {
     private func updateFire(animated: Bool = true) {
         guard let fire else { return }
         let p = state.pomodoro
+        fire.configure(sky: state.sky, upgrades: state.upgrades)
         fire.set(level: p.phase == .done ? 0 : state.fireLevel, animated: animated)
         let title: String
         switch p.phase {

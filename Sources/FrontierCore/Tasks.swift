@@ -79,9 +79,21 @@ public struct Ledger: Codable, Equatable, Sendable {
     public var honor: Double
     /// yyyy-MM-dd of the last day this ledger was touched.
     public var lastDay: String
+    /// Every bit of honor ever earned, added up. Unlike `honor` it never fades, so it measures
+    /// weeks of work rather than today's standing. It is what the camp is built from.
+    public var renown: Double
 
-    public init(tasks: [TaskItem] = [], honor: Double = 0, lastDay: String = "") {
-        self.tasks = tasks; self.honor = honor; self.lastDay = lastDay
+    public init(tasks: [TaskItem] = [], honor: Double = 0, lastDay: String = "", renown: Double = 0) {
+        self.tasks = tasks; self.honor = honor; self.lastDay = lastDay; self.renown = renown
+    }
+
+    // Tolerant decoding, so state saved before `renown` existed still loads.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tasks = try c.decodeIfPresent([TaskItem].self, forKey: .tasks) ?? []
+        honor = try c.decodeIfPresent(Double.self, forKey: .honor) ?? 0
+        lastDay = try c.decodeIfPresent(String.self, forKey: .lastDay) ?? ""
+        renown = try c.decodeIfPresent(Double.self, forKey: .renown) ?? 0
     }
 
     public var hasTimedOpenTasks: Bool { tasks.contains { !$0.isDone && $0.dueAt != nil } }
@@ -121,12 +133,14 @@ public struct Ledger: Codable, Equatable, Sendable {
         honor = Honor.apply(honor, delta: onTime ? TaskRules.onTimeGain : TaskRules.lateGain)
         tasks[i].awarded = honor - before
         tasks[i].completedAt = now
+        renown += honor - before
         return honor - before
     }
 
     public mutating func uncomplete(_ id: UUID) {
         guard let i = tasks.firstIndex(where: { $0.id == id }), tasks[i].isDone else { return }
         honor = min(1, max(-1, honor - tasks[i].awarded))
+        renown = max(0, renown - tasks[i].awarded)
         tasks[i].awarded = 0
         tasks[i].completedAt = nil
     }

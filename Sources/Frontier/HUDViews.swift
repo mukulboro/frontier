@@ -162,7 +162,7 @@ struct HonorToastView: View {
     var body: some View {
         HStack(spacing: 8) {
             ArtGlyph(name: "hat", color: toast.gained ? Theme.bone : Theme.rustLight).frame(width: 18, height: 18)
-            HUDLabel(text: toast.gained ? "Honor gained" : "Honor lost", size: 12,
+            HUDLabel(text: toast.title ?? (toast.gained ? "Honor gained" : "Honor lost"), size: 12,
                      color: toast.gained ? Theme.bone : Theme.rustLight)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)

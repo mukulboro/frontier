@@ -3,6 +3,8 @@ Silhouette icons from game-icons.net, licensed CC BY 3.0 (https://creativecommon
   stag-head.svg  — "Stag head" by Lorc
   wolf.svg       — "Wolf howl" by Lorc
   hat.svg        — "Western hat" by Delapouite
+  chopping-block.svg ("Axe in log"), lantern.svg ("Old lantern"), tent.svg ("Camping tent"),
+  barrel.svg ("Barrel"), wagon.svg ("Old wagon") — all by Delapouite
 Modified: background rectangle removed.
 
 Fonts (SIL Open Font License 1.1, see Fonts/OFL.txt): Rye, Big Shoulders Display, Lora, Caveat.

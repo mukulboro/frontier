@@ -16,6 +16,8 @@ struct Settings: Codable, Equatable {
     var hotKey = HotKeyChoice.optionTab
     /// Which display carries the desktop pieces: "all", or one display's id.
     var display = "all"
+    var skyFollowsClock = true
+    var menuBar = MenuBarStyle.watch
 
     init() {}
 
@@ -34,6 +36,8 @@ struct Settings: Codable, Equatable {
         wheelSlots = try c.decodeIfPresent([String].self, forKey: .wheelSlots) ?? d.wheelSlots
         hotKey = try c.decodeIfPresent(HotKeyChoice.self, forKey: .hotKey) ?? d.hotKey
         display = try c.decodeIfPresent(String.self, forKey: .display) ?? d.display
+        skyFollowsClock = try c.decodeIfPresent(Bool.self, forKey: .skyFollowsClock) ?? d.skyFollowsClock
+        menuBar = try c.decodeIfPresent(MenuBarStyle.self, forKey: .menuBar) ?? d.menuBar
     }
 }
 
@@ -49,8 +53,23 @@ enum HotKeyChoice: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// What the menu bar shows while a timer runs.
+enum MenuBarStyle: String, Codable, CaseIterable, Identifiable {
+    case watch, countdown, both
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .watch: return "Pocket watch"
+        case .countdown: return "Countdown"
+        case .both: return "Watch and countdown"
+        }
+    }
+}
+
 struct HonorToast: Equatable {
     let gained: Bool
+    /// Overrides the default "Honor gained/lost" wording, e.g. for a camp upgrade.
+    var title: String?
     let id = UUID()
 }
 
@@ -76,6 +95,8 @@ final class AppState: ObservableObject {
     @Published private(set) var slowBattery = SlowCore()
     @Published private(set) var toast: HonorToast?
     @Published var immersive = false
+    /// The sky over the camp. Only republished when the phase actually changes.
+    @Published private(set) var sky = SkyPhase.night
 
     /// Fired on timer transitions so audio/visuals can react.
     let pomodoroEvents = PassthroughSubject<PomodoroEvent, Never>()
@@ -101,6 +122,7 @@ final class AppState: ObservableObject {
         pomodoro = PomodoroEngine(config: snap.settings.pomodoro)
         ledger.rollover(now: Date())
         ledger.tick(now: Date())
+        refreshSky()
         guard live else { return }
         let ws = NSWorkspace.shared.notificationCenter
         observers.append(ws.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
@@ -128,6 +150,17 @@ final class AppState: ObservableObject {
     var mood: HonorMood { Honor.mood(ledger.honor) }
     var rank: HonorRank { Honor.rank(ledger.honor) }
     var fireLevel: Double { pomodoro.fireLevel(now: now) }
+    var upgrades: [CampUpgrade] { CampUpgrade.unlocked(renown: ledger.renown) }
+
+    private func refreshSky() {
+        // FRONTIER_SKY pins the phase, so every sky can be checked without waiting for the hour.
+        if let forced = ProcessInfo.processInfo.environment["FRONTIER_SKY"].flatMap(SkyPhase.init(rawValue:)) {
+            if forced != sky { sky = forced }
+            return
+        }
+        let phase = settings.skyFollowsClock ? SkyPhase.at(Date()) : .night
+        if phase != sky { sky = phase }
+    }
 
     var backdrop: BackdropMode {
         if settings.campfireOnDesktop, pomodoro.phase != .idle { return .campfire }
@@ -144,6 +177,7 @@ final class AppState: ObservableObject {
     func startTimer() {
         doneWork?.cancel()
         pomodoro.config = settings.pomodoro
+        refreshSky()
         pomodoro.start(now: Date())
         now = Date()
         retime()
@@ -172,6 +206,7 @@ final class AppState: ObservableObject {
         let t = Date()
         if let e = pomodoro.tick(now: t) { handle(e) }
         now = t
+        refreshSky()
         if !pomodoro.isRunning { retime() }
     }
 
@@ -198,8 +233,16 @@ final class AppState: ObservableObject {
         guard let t = ledger.tasks.first(where: { $0.id == id }) else { return }
         if t.isDone {
             ledger.uncomplete(id)
-        } else if ledger.complete(id, now: Date()) > 0 {
-            show(HonorToast(gained: true))
+        } else {
+            let before = upgrades
+            if ledger.complete(id, now: Date()) > 0 {
+                // A new piece of camp outranks the ordinary honor notice.
+                if let earned = upgrades.last, !before.contains(earned) {
+                    show(HonorToast(gained: true, title: "Camp improved · \(earned.title)"))
+                } else {
+                    show(HonorToast(gained: true))
+                }
+            }
         }
         ledgerChanged()
     }
@@ -259,6 +302,7 @@ final class AppState: ObservableObject {
     }
 
     private func settingsChanged(_ old: Settings) {
+        refreshSky()
         if !pomodoro.phase.isActive { pomodoro.config = settings.pomodoro }
         save()
         retime()
@@ -313,5 +357,9 @@ final class AppState: ObservableObject {
         slowBattery = SlowCore(); slowBattery.update(s.battery ?? 0)
     }
 
-    func debugToast(gained: Bool) { toast = HonorToast(gained: gained) }
+    func debugToast(gained: Bool, title: String? = nil) { toast = HonorToast(gained: gained, title: title) }
+
+    func debugSet(renown: Double) { ledger.renown = renown }
+
+    func debugSet(sky phase: SkyPhase) { sky = phase }
 }

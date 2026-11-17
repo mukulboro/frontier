@@ -179,12 +179,12 @@ struct CampTab: View {
             VStack(spacing: 8) {
                 SectionRule(title: "Campfire")
                 PaperToggle(title: "Fire on the desktop", isOn: $state.settings.campfireOnDesktop)
-                PaperToggle(title: "Crackle of the fire", isOn: $state.settings.fireSound)
                 if p.phase != .idle, state.settings.campfireOnDesktop {
                     InkButton(title: "Sit by the fire") { state.immersive = true }
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            CampProgress(renown: state.ledger.renown)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18).padding(.bottom, 14)
@@ -215,6 +215,58 @@ struct CampTab: View {
             }
         }
         .controlSize(.small)
+    }
+}
+
+/// What the camp has earned so far, and how close the next piece is. No numbers: a bar, like honor.
+struct CampProgress: View {
+    let renown: Double
+
+    var body: some View {
+        let unlocked = CampUpgrade.unlocked(renown: renown)
+        VStack(spacing: 7) {
+            SectionRule(title: "The camp")
+            HStack(spacing: 0) {
+                ForEach(CampUpgrade.allCases, id: \.self) { up in
+                    let have = unlocked.contains(up)
+                    VStack(spacing: 3) {
+                        ArtGlyph(name: Self.glyph(up), color: have ? Theme.ink : Theme.inkFaint.opacity(0.45))
+                            .frame(width: 26, height: 26)
+                        // Earned pieces are marked by a rule beneath, not by colour alone.
+                        Rectangle().fill(have ? Theme.rustDark : .clear).frame(width: 18, height: 2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .help(have ? up.title : "\(up.title) — not yet earned")
+                    .accessibilityLabel("\(up.title), \(have ? "earned" : "not yet earned")")
+                }
+            }
+            if let next = CampUpgrade.next(renown: renown) {
+                HStack(spacing: 8) {
+                    HUDLabel(text: "Next · \(next.upgrade.title)", size: 9.5, color: Theme.inkSoft)
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Rectangle().stroke(Theme.paperEdge, lineWidth: 1)
+                            Rectangle().fill(Theme.ink).frame(width: max(0, g.size.width * next.progress))
+                        }
+                    }
+                    .frame(height: 5)
+                    .accessibilityLabel("Progress to \(next.upgrade.title)")
+                    .accessibilityValue("\(Int(next.progress * 100)) percent")
+                }
+            } else {
+                HUDLabel(text: "The camp is complete", size: 9.5, color: Theme.inkSoft)
+            }
+        }
+    }
+
+    static func glyph(_ up: CampUpgrade) -> String {
+        switch up {
+        case .choppingBlock: return "chopping-block"
+        case .lantern: return "lantern"
+        case .tent: return "tent"
+        case .provisions: return "barrel"
+        case .wagon: return "wagon"
+        }
     }
 }
 
@@ -448,10 +500,18 @@ struct SettingsTab: View {
                     Text(loginError).font(Theme.body(11.5)).foregroundStyle(Theme.rustDark)
                 }
 
+                Picker(selection: $state.settings.menuBar) {
+                    ForEach(MenuBarStyle.allCases) { Text($0.label).tag($0) }
+                } label: {
+                    Text("Menu bar timer").font(Theme.body(14))
+                }
+                .controlSize(.small)
+
                 SectionRule(title: "On the desktop")
                 PaperToggle(title: "Cores", detail: "Battery, signal, memory and CPU as rings", isOn: $state.settings.showCores)
                 PaperToggle(title: "Honor meter", isOn: $state.settings.showHonorHUD)
                 PaperToggle(title: "Visions", detail: "The stag at high honor, the wolf at low", isOn: $state.settings.honorBackdrop)
+                PaperToggle(title: "Sky follows the clock", detail: "Dawn, day, dusk and night over the camp", isOn: $state.settings.skyFollowsClock)
                 if displays.count > 1 {
                     Picker(selection: $state.settings.display) {
                         Text("All displays").tag("all")

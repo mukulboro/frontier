@@ -43,8 +43,10 @@ struct WheelView: View {
 
     private var hint: String {
         if model.editing { return "Choose an app to equip   ·   Esc to go back" }
-        return (model.pinned ? "Click or ⏎ to draw" : "Release \(model.hotKeyLabel.split(separator: " ").first ?? "") to draw")
-            + "   ·   E or right-click to change equipped   ·   Esc to holster"
+        let draw = model.pinned ? "Click or ⏎ to draw" : "Release \(model.hotKeyLabel.split(separator: " ").first ?? "") to draw"
+        let flip = model.page == .apps ? "R for the gramophone" : "R for your apps"
+        let edit = model.page == .apps ? "   ·   E or right-click to change equipped" : ""
+        return draw + "   ·   " + flip + edit + "   ·   Esc to holster"
     }
 
     private var wheel: some View {
@@ -70,7 +72,12 @@ struct WheelView: View {
         let a = (WheelMath.centerAngle(of: i) - 90) * .pi / 180
         let r = (WheelModel.outer + WheelModel.inner) / 2
         Group {
-            if let app = model.slots[i] {
+            if model.page == .gramophone {
+                let action = i < model.tunes.count ? model.tunes[i] : nil
+                Image(systemName: action?.symbol ?? "questionmark")
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundStyle(on ? Theme.bone : Theme.boneDim)
+            } else if let app = model.slots[i] {
                 Image(nsImage: AppCatalog.icon(app.path))
                     .resizable().interpolation(.high)
                     .frame(width: 66, height: 66)
@@ -89,7 +96,9 @@ struct WheelView: View {
 
     @ViewBuilder
     private var hub: some View {
-        if let i = model.selected {
+        if model.page == .gramophone {
+            gramophoneHub
+        } else if let i = model.selected {
             if let m = model.meta {
                 VStack(spacing: 5) {
                     Text(m.name.uppercased())
@@ -121,6 +130,30 @@ struct WheelView: View {
                 HUDLabel(text: "Choose", size: 11, color: Theme.boneFaint)
             }
         }
+    }
+
+    /// The gramophone's hub: what the highlighted control does, and a warning if Frontier can't
+    /// actually reach the player.
+    @ViewBuilder
+    private var gramophoneHub: some View {
+        let action = model.selected.flatMap { $0 < model.tunes.count ? model.tunes[$0] : nil }
+        VStack(spacing: 6) {
+            Image(systemName: "music.note.list").font(.system(size: 20, weight: .light)).foregroundStyle(Theme.boneFaint)
+            Text((action?.title ?? "Gramophone").uppercased())
+                .font(Theme.display(19, .heavy)).tracking(1.8)
+                .foregroundStyle(Theme.bone)
+                .lineLimit(2).multilineTextAlignment(.center).minimumScaleFactor(0.6)
+            if !model.canControlMedia {
+                Rectangle().fill(Theme.line).frame(width: 70, height: 1).padding(.vertical, 1)
+                Text("Needs permission")
+                    .font(Theme.body(12)).foregroundStyle(Theme.rustLight).multilineTextAlignment(.center)
+                Text("Settings › Grant media control")
+                    .font(Theme.body(11)).foregroundStyle(Theme.boneDim).multilineTextAlignment(.center)
+            } else {
+                meta(action?.detail ?? "Point at a control")
+            }
+        }
+        .padding(.horizontal, 14)
     }
 
     private func meta(_ s: String) -> some View {

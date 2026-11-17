@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 import FrontierCore
 
+/// The wheel has two faces: your apps, and the gramophone.
+enum WheelPage { case apps, gramophone }
+
 final class WheelModel: ObservableObject {
     static let outer: CGFloat = 250
     static let inner: CGFloat = 104
@@ -15,6 +18,11 @@ final class WheelModel: ObservableObject {
     @Published var query = ""
     @Published var catalog: [AppInfo] = []
     @Published var hotKeyLabel = ""
+    @Published var page = WheelPage.apps
+    @Published var tunes: [GramophoneAction] = []
+    /// False when Frontier lacks the Accessibility permission, so the wheel can say so instead of
+    /// quietly doing nothing.
+    @Published var canControlMedia = true
 
     var onCommit: ((Int) -> Void)?
     var onEquip: ((Int, AppInfo?) -> Void)?
@@ -28,7 +36,15 @@ final class WheelModel: ObservableObject {
     func select(_ i: Int?) {
         guard i != selected else { return }
         selected = i
-        meta = i.flatMap { slots[$0] }.map(AppCatalog.meta)
+        // Only the apps page has app metadata to look up.
+        meta = page == .apps ? i.flatMap { slots[$0] }.map(AppCatalog.meta) : nil
+    }
+
+    func flipPage() {
+        page = page == .apps ? .gramophone : .apps
+        let keep = selected
+        selected = nil
+        select(keep)
     }
 }
 
@@ -85,11 +101,14 @@ final class WheelController {
 
     // MARK: Open / close
 
-    func open(pinned: Bool = false) {
+    func open(pinned: Bool = false, page: WheelPage = .apps) {
         guard !isOpen else { return }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main ?? NSScreen.screens[0]
         loadSlots()
+        model.page = page
+        model.tunes = GramophoneAction.all(playlist: state.settings.playlistURL)
+        model.canControlMedia = MediaKeys.hasPermission
         model.selected = nil; model.meta = nil
         model.pinned = pinned; model.editing = false; model.query = ""
         keyboardDriven = false
@@ -157,6 +176,28 @@ final class WheelController {
     }
 
     private func commit(_ index: Int) {
+        if model.page == .gramophone {
+            guard index >= 0, index < model.tunes.count else { return }
+            let action = model.tunes[index]
+            if let open = action.open {
+                open()
+                if action.staysOpen || action.id == "mute" {
+                    // Volume and mute stay on the wheel so they can be nudged again, and the hub
+                    // re-reads the live level.
+                    model.tunes = GramophoneAction.all(playlist: state.settings.playlistURL)
+                    let keep = model.selected
+                    model.selected = nil
+                    model.select(keep)
+                } else {
+                    close(restoreFocus: false)
+                }
+                return
+            }
+            guard let key = action.key else { return }
+            if !MediaKeys.post(key) { model.canControlMedia = false; return }
+            if !action.staysOpen { close(restoreFocus: true) }
+            return
+        }
         guard index >= 0, index < model.slots.count else { return }
         guard let app = model.slots[index] else {
             // An empty slot is an invitation to equip something.
@@ -192,6 +233,14 @@ final class WheelController {
         }
     }
 
+    /// Test hook: runs a key press through the real handler.
+    func handleForTest(keyCode: UInt16) -> Bool {
+        guard let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                       windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+                                       isARepeat: false, keyCode: keyCode) else { return false }
+        return handle(e) == nil
+    }
+
     private func handle(_ e: NSEvent) -> NSEvent? {
         guard isOpen else { return e }
         switch e.type {
@@ -200,7 +249,7 @@ final class WheelController {
             if let i = segment(at: e) { commit(i) } else { close(restoreFocus: true) }
             return nil
         case .rightMouseDown:
-            if let i = segment(at: e) { model.select(i); beginEditing() }
+            if model.page == .apps, let i = segment(at: e) { model.select(i); beginEditing() }
             return nil
         case .keyDown:
             if e.keyCode == 53 {                               // esc
@@ -212,8 +261,9 @@ final class WheelController {
             case 36, 76: if let i = model.selected { commit(i) }
             case 124, 125: keyboardDriven = true; step(1)
             case 123, 126: keyboardDriven = true; step(-1)
-            case 14: if model.selected != nil { beginEditing() }            // E — change equipped
-            case 51: if let i = model.selected { equip(i, nil) }            // delete — unequip
+            case 15: model.flipPage()                                       // R — flip to the other wheel
+            case 14: if model.page == .apps, model.selected != nil { beginEditing() }   // E — change equipped
+            case 51: if model.page == .apps, let i = model.selected { equip(i, nil) }   // delete — unequip
             default:
                 if let n = Int(e.charactersIgnoringModifiers ?? ""), (1...8).contains(n) {
                     keyboardDriven = true
@@ -240,6 +290,7 @@ final class WheelController {
     // MARK: Equipping
 
     private func beginEditing() {
+        guard model.page == .apps else { return }
         if model.catalog.isEmpty { model.catalog = AppCatalog.installed() }
         model.query = ""
         model.pinned = true
@@ -252,7 +303,7 @@ final class WheelController {
     }
 
     private func equip(_ index: Int, _ app: AppInfo?) {
-        guard index >= 0, index < 8 else { return }
+        guard model.page == .apps, index >= 0, index < 8 else { return }
         var slots = state.settings.wheelSlots
         slots[index] = app?.path ?? ""
         state.settings.wheelSlots = slots

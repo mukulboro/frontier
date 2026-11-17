@@ -2,7 +2,7 @@ SDK_ARGS := $(shell scripts/sdk-args.sh)
 export SDK_ARGS
 SNAP ?= build/snapshots
 
-.PHONY: build test snapshots selftest fire app run install uninstall clean
+.PHONY: build test snapshots selftest fire app dmg signing-identity run install uninstall clean
 
 build:
 	swift build -c release $(SDK_ARGS)
@@ -24,6 +24,14 @@ fire:
 
 app: build
 	scripts/bundle.sh
+
+# One-time: a stable signing identity, so the Accessibility grant survives reinstalls.
+signing-identity:
+	scripts/signing-identity.sh
+
+# A disk image for sharing: Frontier.app next to an Applications shortcut.
+dmg: app
+	scripts/dmg.sh
 
 run: app
 	-pkill -x Frontier && while pgrep -xq Frontier; do sleep 0.2; done; sleep 0.5

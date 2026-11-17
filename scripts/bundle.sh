@@ -27,5 +27,13 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$app" >/dev/null 2>&1
+# Prefer the stable self-signed identity, so the Accessibility grant survives a reinstall.
+# Falls back to ad-hoc, which works but is revoked on every build (see scripts/signing-identity.sh).
+identity="Frontier Local Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$identity"; then
+  codesign --force --sign "$identity" "$app" >/dev/null 2>&1 && signed="stable" || signed="failed"
+else
+  codesign --force --sign - "$app" >/dev/null 2>&1 && signed="ad-hoc" || signed="failed"
+fi
+echo "signed: $signed" >&2
 echo "$app"

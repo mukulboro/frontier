@@ -12,6 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var popover: NSPopover?
     private var bag = Set<AnyCancellable>()
     private var lastTitle = ""
+    private var lastIcon = ""
+    private lazy var hatIcon: NSImage = {
+        let icon = Res.art("hat").copy() as! NSImage
+        icon.size = NSSize(width: 19, height: 19)
+        icon.isTemplate = true
+        return icon
+    }()
 
     func applicationDidFinishLaunching(_ note: Notification) {
         Theme.registerFonts()
@@ -21,10 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            let icon = Res.art("hat").copy() as! NSImage
-            icon.size = NSSize(width: 19, height: 19)
-            icon.isTemplate = true
-            button.image = icon
+            button.image = hatIcon
             button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(togglePopover)
@@ -52,6 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             state.startTimer()
         case "wheel": wheel.open(pinned: true)
         case "wheel-selftest": wheelSelfTest()
+        case "camp":      // a fully built camp, burning
+            state.debugSet(renown: 20)
+            state.settings.pomodoro = PomodoroConfig(focusMinutes: 2, shortBreakMinutes: 1, longBreakMinutes: 1, rounds: 1)
+            state.startTimer()
         case "stag": state.debugSet(honor: 0.7)
         case "wolf": state.debugSet(honor: -0.7)
         default: break
@@ -94,16 +102,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         state?.save()
     }
 
-    /// Mirrors timer state into the menu bar title and the fire's sound.
+    /// Mirrors timer state into the menu bar and the fire's sound. Called on every state change, so
+    /// each piece is only touched when its own value has moved.
     private func refresh() {
         let p = state.pomodoro
-        let title = p.phase.isActive ? " " + formatClock(p.remaining(now: state.now)) : ""
+        let style = state.settings.menuBar
+        let active = p.phase.isActive
+        let clock = active ? formatClock(p.remaining(now: state.now)) : ""
+
+        let title = active && style != .watch ? " " + clock : ""
         if title != lastTitle {
             lastTitle = title
             statusItem.button?.attributedTitle = NSAttributedString(string: title, attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
             ])
         }
+
+        // Icon: the hat when idle, the pocket watch while a phase runs.
+        let icon: String
+        if active, style != .countdown {
+            icon = "watch-\(WatchFace.step(for: p.progress(now: state.now)))-\(p.isPaused)-\(p.phase.isBreak)"
+        } else {
+            icon = "hat"
+        }
+        if icon != lastIcon {
+            lastIcon = icon
+            statusItem.button?.image = icon == "hat" ? hatIcon
+                : WatchFace.image(step: WatchFace.step(for: p.progress(now: state.now)), paused: p.isPaused, resting: p.phase.isBreak)
+        }
+        // The exact time is always a hover away, whichever style is showing.
+        let tip = active ? "\(p.isPaused ? "Paused" : (p.phase.isBreak ? "Rest" : "Focus")) · \(clock) left" : "Frontier"
+        if statusItem.button?.toolTip != tip {
+            statusItem.button?.toolTip = tip
+            statusItem.button?.setAccessibilityValue(active ? tip : nil)
+        }
+
         audio.volume = state.settings.volume
         let burning = state.settings.fireSound && p.isRunning
         audio.setFire(on: burning, level: state.fireLevel)

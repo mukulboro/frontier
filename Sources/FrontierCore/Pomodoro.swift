@@ -50,6 +50,13 @@ public struct PomodoroEngine: Equatable, Sendable {
         return max(0, end.timeIntervalSince(now))
     }
 
+    /// How far through the current phase we are, 0…1. Drives the pocket watch's hand.
+    public func progress(now: Date) -> Double {
+        let total = duration(of: phase)
+        guard total > 0 else { return 0 }
+        return min(1, max(0, 1 - remaining(now: now) / total))
+    }
+
     /// How tall the campfire burns, 0…1. Burns down through focus, rekindles through a break.
     public func fireLevel(now: Date) -> Double {
         let total = duration(of: phase)

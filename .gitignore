@@ -1,0 +1,7 @@
+APP_IDEA.md
+DESIGN_LANGUAGE.md
+.DS_Store
+.build/
+build/
+*.xcodeproj
+.swiftpm/

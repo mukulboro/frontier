@@ -1,0 +1,12 @@
+Silhouette icons from game-icons.net, licensed CC BY 3.0 (https://creativecommons.org/licenses/by/3.0/):
+  stag.svg       — "Deer" by Caro Asercion
+  stag-head.svg  — "Stag head" by Lorc
+  wolf.svg       — "Wolf howl" by Lorc
+  hat.svg        — "Western hat" by Delapouite
+Modified: background rectangle removed.
+
+Fonts (SIL Open Font License 1.1, see Fonts/OFL.txt): Rye, Big Shoulders Display, Lora, Caveat.
+
+Campfire footage (Video/campfire.mp4): "Fire of a bonfire against black", Mixkit #45676,
+  https://mixkit.co/free-stock-video/fire-of-a-bonfire-against-black-45676/
+  Mixkit Stock Video Free License. Cropped, black level adjusted and loop-dissolved by scripts/make-fire.sh.

@@ -361,3 +361,277 @@ func approx(_ a: Double, _ b: Double, _ eps: Double = 1e-9) -> Bool { abs(a - b)
         #expect(approx(e.progress(now: t0.addingTimeInterval(9999)), 0.5))     // frozen while paused
     }
 }
+
+// MARK: Usage
+//
+// Every fixture here is invented. The tests never read the real ~/.claude, so no transcript content
+// is ever touched by the suite.
+
+private func fixtureRoot() -> URL {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("frontier-usage-\(UUID().uuidString)")
+    try? FileManager.default.createDirectory(at: dir.appendingPathComponent("a/b/c"), withIntermediateDirectories: true)
+    return dir
+}
+
+/// One assistant row. `blocks` repeats it the way Claude Code does, once per content block.
+private func row(id: String, request: String = "req", model: String = "claude-sonnet-5",
+                 ts: String = "2026-11-17T09:00:00.000Z", cwd: String = "/Users/x/alpha",
+                 out: Int = 100, input: Int = 2, write: Int = 50, read: Int = 900, blocks: Int = 1) -> String {
+    (0..<blocks).map { i in
+        """
+        {"type":"assistant","timestamp":"\(ts)","cwd":"\(cwd)","requestId":"\(request)","apiBlockIndex":\(i),\
+        "message":{"id":"\(id)","model":"\(model)","role":"assistant","content":[],"usage":{"input_tokens":\(input),\
+        "output_tokens":\(out),"cache_creation_input_tokens":\(write),"cache_read_input_tokens":\(read)}}}
+        """.replacingOccurrences(of: "\n", with: "")
+    }.joined(separator: "\n")
+}
+
+@Suite struct UsageTests {
+    @Test func countsEachMessageOnceDespiteRepeatedBlocks() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lines = [row(id: "m1", blocks: 4), row(id: "m2", request: "r2", out: 20, blocks: 3)]
+        try lines.joined(separator: "\n").appending("\n").write(to: root.appendingPathComponent("a/s.jsonl"), atomically: true, encoding: .utf8)
+        let r = UsageScanner(root: root).scan()
+        #expect(r.all.messages == 2)                 // not 7
+        #expect(r.all.output == 120)
+        #expect(r.all.cacheRead == 1800)
+    }
+
+    @Test func dedupesRepeatsThatAreNotAdjacentOrEvenInTheSameFile() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Interleaved repeats in one file...
+        let interleaved = [row(id: "a", out: 10), row(id: "b", request: "r2", out: 20),
+                           row(id: "a", out: 10), row(id: "b", request: "r2", out: 20)]
+        try (interleaved.joined(separator: "\n") + "\n").write(to: root.appendingPathComponent("a/main.jsonl"), atomically: true, encoding: .utf8)
+        // ...and the same call restated in a subagent transcript, as Claude Code really does.
+        try (row(id: "a", out: 10) + "\n").write(to: root.appendingPathComponent("a/b/c/subagent.jsonl"), atomically: true, encoding: .utf8)
+        let r = UsageScanner(root: root).scan()
+        #expect(r.all.messages == 2)
+        #expect(r.all.output == 30)
+    }
+
+    @Test func fingerprintIsStableAcrossRuns() {
+        // Persisted between launches, so it must not depend on Swift's per-process hash seed.
+        #expect(UsageScanner.fingerprint("msg_abc|req_def") == 0xe2d0_7211_956c_9735)
+        #expect(UsageScanner.fingerprint("") == 0xcbf2_9ce4_8422_2325)
+        #expect(UsageScanner.fingerprint("a") != UsageScanner.fingerprint("b"))
+    }
+
+    @Test func findsDeeplyNestedTranscripts() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try (row(id: "top") + "\n").write(to: root.appendingPathComponent("a/top.jsonl"), atomically: true, encoding: .utf8)
+        try (row(id: "deep", out: 7) + "\n").write(to: root.appendingPathComponent("a/b/c/deep.jsonl"), atomically: true, encoding: .utf8)
+        let r = UsageScanner(root: root).scan()
+        #expect(r.all.messages == 2 && r.all.output == 107)
+    }
+
+    @Test func ignoresNonAssistantAndSyntheticRows() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let junk = """
+        {"type":"user","message":{"role":"user","content":"secret"}}
+        {"type":"api-request","requestId":"x"}
+        {"type":"assistant","message":{"id":"s","model":"<synthetic>","usage":{"output_tokens":9999}}}
+        not json at all
+        """
+        try (junk + "\n" + row(id: "real") + "\n").write(to: root.appendingPathComponent("a/s.jsonl"), atomically: true, encoding: .utf8)
+        let r = UsageScanner(root: root).scan()
+        #expect(r.all.messages == 1 && r.all.output == 100)
+        #expect(r.models.keys.sorted() == ["claude-sonnet-5"])
+    }
+
+    @Test func incrementalScanAddsOnlyNewRowsAndNeverSplitsAMessage() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent("cache.json")
+        let file = root.appendingPathComponent("a/s.jsonl")
+        let scanner = UsageScanner(root: root, cacheURL: cache)
+        try (row(id: "m1", blocks: 3) + "\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(scanner.scan().all.messages == 1)
+        // Append a half-written line: it must not be counted until its newline arrives.
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        let partial = row(id: "m2", request: "r2", out: 42)
+        try handle.write(contentsOf: Data(partial.dropLast(20).utf8))
+        try handle.close()
+        var r = scanner.scan()
+        #expect(r.all.messages == 1 && r.all.output == 100)
+        // Completing the line counts it exactly once.
+        let h2 = try FileHandle(forWritingTo: file)
+        try h2.seekToEnd()
+        try h2.write(contentsOf: Data((String(partial.suffix(20)) + "\n").utf8))
+        try h2.close()
+        r = scanner.scan()
+        #expect(r.all.messages == 2 && r.all.output == 142)
+        #expect(scanner.scan().all.messages == 2)      // rescanning changes nothing
+    }
+
+    @Test func rewrittenFileIsCountedFromScratch() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = root.appendingPathComponent("cache.json")
+        let file = root.appendingPathComponent("a/s.jsonl")
+        let scanner = UsageScanner(root: root, cacheURL: cache)
+        try (row(id: "m1") + "\n" + row(id: "m2", request: "r2") + "\n").write(to: file, atomically: true, encoding: .utf8)
+        #expect(scanner.scan().all.messages == 2)
+        try (row(id: "only", out: 5) + "\n").write(to: file, atomically: true, encoding: .utf8)   // shrank
+        #expect(scanner.scan().all.output == 5)
+    }
+
+    @Test func bucketsByDayProjectAndModel() throws {
+        let root = fixtureRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let lines = [
+            row(id: "a", ts: "2026-11-17T09:00:00.000Z", cwd: "/Users/x/alpha", out: 10),
+            row(id: "b", request: "r2", model: "claude-opus-5", ts: "2026-11-17T10:00:00.000Z", cwd: "/Users/x/beta", out: 20),
+            row(id: "c", request: "r3", ts: "2026-11-16T10:00:00.000Z", cwd: "/Users/x/alpha", out: 30),
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: root.appendingPathComponent("a/s.jsonl"), atomically: true, encoding: .utf8)
+        let r = UsageScanner(root: root).scan()
+        #expect(r.projects["alpha"]?.output == 40 && r.projects["beta"]?.output == 20)
+        #expect(r.models["claude-opus-5"]?.messages == 1)
+        #expect(r.top(r.projects, 1).first?.name == "alpha")
+        #expect(r.all.output == 60)
+    }
+
+    @Test func missingRootIsEmptyNotACrash() {
+        let r = UsageScanner(root: URL(fileURLWithPath: "/nope/does/not/exist")).scan()
+        #expect(r.all.messages == 0 && r.days.isEmpty)
+    }
+
+    @Test func utcTimestampsLandOnTheRightLocalDay() {
+        // Kathmandu is UTC+5:45, so late-evening UTC is already tomorrow locally.
+        let npt = 5 * 3600 + 45 * 60
+        #expect(UsageScanner.localDay(fromISO: "2026-11-17T09:00:00.000Z", offsetSeconds: npt) == "2026-11-17")
+        #expect(UsageScanner.localDay(fromISO: "2026-11-17T18:30:00.000Z", offsetSeconds: npt) == "2026-11-18")
+        #expect(UsageScanner.localDay(fromISO: "2026-01-01T00:00:00.000Z", offsetSeconds: -8 * 3600) == "2025-12-31")
+        #expect(UsageScanner.localDay(fromISO: "2026-02-28T20:00:00.000Z", offsetSeconds: npt) == "2026-03-01")   // leap year
+        #expect(UsageScanner.localDay(fromISO: nil) == "unknown")
+        #expect(UsageScanner.localDay(fromISO: "garbage") == "unknown")
+    }
+
+    @Test func civilCalendarRoundTrips() {
+        for (y, m, d) in [(1970, 1, 1), (2000, 2, 29), (2026, 11, 17), (2026, 12, 31), (1999, 3, 1)] {
+            let (a, b, c) = UsageScanner.civil(fromDays: UsageScanner.days(y: y, m: m, d: d))
+            #expect((a, b, c) == (y, m, d))
+        }
+    }
+
+    @Test func rollingWindowsAndSparkline() {
+        var r = UsageReport()
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "UTC")!
+        let today = cal.date(from: DateComponents(year: 2026, month: 11, day: 17))!
+        for (offset, out) in [(0, 100), (1, 50), (6, 25), (9, 1000)] {
+            var t = UsageTotals(); t.output = out; t.messages = 1
+            r.days[UsageScanner.dayKey(cal.date(byAdding: .day, value: -offset, to: today)!, calendar: cal)] = t
+        }
+        #expect(r.totals(sinceDaysAgo: 1, today: today, calendar: cal).output == 100)
+        #expect(r.totals(sinceDaysAgo: 7, today: today, calendar: cal).output == 175)
+        #expect(r.totals(sinceDaysAgo: 14, today: today, calendar: cal).output == 1175)
+        let spark = r.recentDays(7, today: today, calendar: cal)
+        #expect(spark.count == 7)
+        #expect(spark.last?.totals.output == 100)       // today is last
+        #expect(spark.first?.totals.output == 25)       // six days ago is first
+    }
+
+    @Test func tokenFormatting() {
+        #expect(formatTokens(0) == "0")
+        #expect(formatTokens(999) == "999")
+        #expect(formatTokens(12_400) == "12.4k")
+        #expect(formatTokens(3_100_000) == "3.1M")
+        #expect(formatTokens(4_870_000_000) == "4.87B")
+    }
+}
+
+// MARK: Usage limits
+//
+// Fixtures below are hand-written in the shape the CLIs print, not captured output.
+
+@Suite struct LimitTests {
+    static let claudeOutput = """
+    Warning: this sign-in ends between 2026-11-19 and 2026-11-22 (in 2 days at the earliest). Run claude auth login before then.
+    You are currently using your subscription to power your Claude Code usage
+
+    Current session: 80% used \u{00B7} resets Nov 17 at 5:25pm (Asia/Katmandu)
+    Current week (all models): 41% used \u{00B7} resets Nov 19 at 2:45pm (Asia/Katmandu)
+
+    What's contributing to your usage?
+    Approximate \u{00B7} sessions on this machine only \u{00B7} shares overlap
+
+    Last 24h \u{00B7} 306 requests \u{00B7} 2 sessions
+      90%  Start fresh when you switch tasks \u{00B7} run /clear
+      13%  See what fills your context \u{00B7} run /context
+      Top subagents: general-purpose 27%
+    """
+
+    @Test func readsTheQuotaLinesAndIgnoresAdvicePercentages() {
+        let l = LimitParser.parse(Self.claudeOutput)
+        #expect(l.count == 2)
+        #expect(l[0].label == "Current session" && l[0].percentUsed == 80)
+        #expect(l[0].resets == "Nov 17 at 5:25pm (Asia/Katmandu)")
+        #expect(l[1].label == "Current week (all models)" && l[1].percentUsed == 41)
+        // The indented "90% Start fresh" tips are a different measure entirely.
+        #expect(!l.contains { $0.percentUsed == 90 || $0.percentUsed == 13 || $0.percentUsed == 27 })
+    }
+
+    @Test func remainingIsWhatTheRingShows() {
+        let l = LimitParser.parse(Self.claudeOutput)
+        #expect(l[0].percentLeft == 20 && approx(l[0].fractionLeft, 0.2))
+        #expect(l[1].percentLeft == 59)
+        var r = ProviderReading(provider: "Claude Code")
+        r.limits = l
+        #expect(r.tightest?.label == "Current session")      // the one closest to running out
+    }
+
+    @Test func shortLabelsFitUnderARing() {
+        #expect(UsageLimit(label: "Current session", percentUsed: 1).shortLabel == "Session")
+        #expect(UsageLimit(label: "Current week (all models)", percentUsed: 1).shortLabel == "Week")
+        #expect(UsageLimit(label: "Opus", percentUsed: 1).shortLabel == "Opus")
+    }
+
+    @Test func edgeCases() {
+        #expect(LimitParser.parse("Current session: 100% used").first?.percentLeft == 0)
+        #expect(LimitParser.parse("Current session: 0% used \u{00B7} resets soon").first?.percentLeft == 100)
+        // No reset clause at all.
+        let noReset = LimitParser.parse("Weekly: 5% used")
+        #expect(noReset.count == 1 && noReset[0].resets == nil)
+        // Things that must never parse.
+        #expect(LimitParser.parse("  90%  Start fresh when you switch tasks").isEmpty)
+        #expect(LimitParser.parse("Top subagents: general-purpose 27%").isEmpty)
+        #expect(LimitParser.parse("Last 24h \u{00B7} 306 requests").isEmpty)
+        #expect(LimitParser.parse("").isEmpty)
+        #expect(LimitParser.parse("garbage without a colon 50% used").isEmpty)
+        #expect(LimitParser.parse("Session: abc% used").isEmpty)
+        // Out-of-range values are clamped rather than trusted.
+        #expect(UsageLimit(label: "x", percentUsed: 140).percentUsed == 100)
+        #expect(UsageLimit(label: "x", percentUsed: -5).percentUsed == 0)
+    }
+
+    @Test func passesOnTheSignInWarning() {
+        let n = LimitParser.notice(in: Self.claudeOutput)
+        #expect(n?.hasPrefix("this sign-in ends") == true)
+        #expect(LimitParser.notice(in: "Current session: 1% used") == nil)
+    }
+
+    @Test func failuresNeverLookLikeZeroPercent() {
+        let bad = LimitParser.reading(provider: "Claude Code", output: "command not found", exitCode: 127)
+        #expect(bad.limits.isEmpty && bad.problem == "couldn't read limits (exit 127)")
+        let out = LimitParser.reading(provider: "Claude Code", output: "Please run claude login to continue", exitCode: 0)
+        #expect(out.problem == "not signed in")
+        let good = LimitParser.reading(provider: "Claude Code", output: Self.claudeOutput, exitCode: 0)
+        #expect(good.problem == nil && good.limits.count == 2 && good.notice != nil)
+    }
+
+    @Test func builtInProvidersAreHonestAboutSupport() {
+        let p = LimitProvider.builtIn
+        #expect(p.first(where: { $0.executable == "claude" })?.supported == true)
+        // No documented quota command exists for these, so they must not pretend otherwise.
+        #expect(p.first(where: { $0.executable == "codex" })?.supported == false)
+        #expect(p.first(where: { $0.executable == "agy" })?.supported == false)
+        #expect(p.first(where: { $0.executable == "claude" })?.arguments.contains("--no-session-persistence") == true)
+    }
+}

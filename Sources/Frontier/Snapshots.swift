@@ -57,6 +57,36 @@ enum Snapshots {
         let state = AppState(storeURL: nil, live: false)
         state.settings.wheelSlots = AppCatalog.defaultSlots
         state.debugSet(renown: 4)
+        // A made-up fortnight, so the snapshot never contains anything read from the real transcripts.
+        var usage = UsageReport()
+        let cal = Calendar.current
+        for (i, out) in [412_000, 0, 88_000, 230_000, 17_000, 0, 0, 640_000, 120_000, 95_000, 0, 51_000, 380_000, 143_000].enumerated() {
+            guard let d = cal.date(byAdding: .day, value: -i, to: Date()) else { continue }
+            var t = UsageTotals(); t.output = out; t.messages = out / 900; t.cacheRead = out * 420
+            usage.days[UsageScanner.dayKey(d)] = t
+        }
+        for (name, out) in [("frontier", 980_000), ("stt-data-clean", 640_000), ("ai-upskill", 410_000), ("cctv", 230_000)] {
+            var t = UsageTotals(); t.output = out; t.messages = out / 850; usage.projects[name] = t
+        }
+        for (name, out) in [("claude-sonnet-5", 1_400_000), ("claude-opus-5", 620_000), ("claude-fable-5-2", 270_000)] {
+            var t = UsageTotals(); t.output = out; t.messages = out / 870; usage.models[name] = t
+        }
+        usage.all = usage.days.values.reduce(UsageTotals(), +)
+        state.debugSet(usage: usage)
+        state.settings.trackUsage = true
+        // Invented readings, in the shape the CLIs print.
+        var claude = ProviderReading(provider: "Claude Code")
+        claude.limits = [UsageLimit(label: "Current session", percentUsed: 80, resets: "Nov 17 at 5:25pm"),
+                         UsageLimit(label: "Current week (all models)", percentUsed: 41, resets: "Nov 19 at 2:45pm")]
+        claude.notice = "this sign-in ends between Nov 19 and Nov 22. Run claude auth login before then."
+        claude.checked = Date()
+        var codex = ProviderReading(provider: "Codex")
+        codex.problem = "no usage command"
+        codex.checked = Date()
+        var agy = ProviderReading(provider: "Antigravity")
+        agy.problem = "no usage command"
+        agy.checked = Date()
+        state.debugSet(limits: [claude, codex, agy])
         state.addTask("Mend the north fence #ranch", limit: 3600)
         state.addTask("Write to Mary #letters", limit: 7200)
         state.addTask("Clean the rifles", limit: nil)
@@ -93,6 +123,17 @@ enum Snapshots {
         save("wheel-selected", render(WheelView(model: model), size: scene))
         model.select(nil)
         save("wheel-idle", render(WheelView(model: model), size: scene))
+        // The gramophone face, with and without permission.
+        model.page = .gramophone
+        model.tunes = GramophoneAction.all(playlist: "https://music.youtube.com/playlist?list=PLx")
+        model.select(0)
+        save("wheel-gramophone", render(WheelView(model: model), size: scene))
+        model.canControlMedia = false
+        model.select(2)
+        save("wheel-gramophone-blocked", render(WheelView(model: model), size: scene))
+        model.canControlMedia = true
+        model.page = .apps
+
         model.select(5)
         model.catalog = AppCatalog.installed()
         model.pinned = true; model.editing = true

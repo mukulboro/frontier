@@ -17,6 +17,10 @@ struct Settings: Codable, Equatable {
     /// Which display carries the desktop pieces: "all", or one display's id.
     var display = "all"
     var skyFollowsClock = true
+    /// Token totals are off by default: the Tally is about limits, not volume of tokens.
+    var trackUsage = false
+    /// Opened by the gramophone wheel. Any URL — a YouTube Music playlist, a radio stream.
+    var playlistURL = ""
     var menuBar = MenuBarStyle.watch
 
     init() {}
@@ -37,6 +41,8 @@ struct Settings: Codable, Equatable {
         hotKey = try c.decodeIfPresent(HotKeyChoice.self, forKey: .hotKey) ?? d.hotKey
         display = try c.decodeIfPresent(String.self, forKey: .display) ?? d.display
         skyFollowsClock = try c.decodeIfPresent(Bool.self, forKey: .skyFollowsClock) ?? d.skyFollowsClock
+        trackUsage = try c.decodeIfPresent(Bool.self, forKey: .trackUsage) ?? d.trackUsage
+        playlistURL = try c.decodeIfPresent(String.self, forKey: .playlistURL) ?? d.playlistURL
         menuBar = try c.decodeIfPresent(MenuBarStyle.self, forKey: .menuBar) ?? d.menuBar
     }
 }
@@ -97,6 +103,11 @@ final class AppState: ObservableObject {
     @Published var immersive = false
     /// The sky over the camp. Only republished when the phase actually changes.
     @Published private(set) var sky = SkyPhase.night
+    /// Claude Code token usage, read from the local transcripts. Nil until the first scan finishes.
+    @Published private(set) var usage: UsageReport?
+    /// Quota readings from each coding agent.
+    @Published private(set) var limits: [ProviderReading] = []
+    @Published private(set) var limitsChecking = false
 
     /// Fired on timer transitions so audio/visuals can react.
     let pomodoroEvents = PassthroughSubject<PomodoroEvent, Never>()
@@ -107,6 +118,9 @@ final class AppState: ObservableObject {
     private var ledgerTimer: Timer?
     private var vitalsTimer: Timer?
     private var toastWork: DispatchWorkItem?
+    private var usageScanning = false
+    private var lastUsageScan = Date.distantPast
+    private var lastLimitCheck = Date.distantPast
     private var doneWork: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private var screenAsleep = false
@@ -282,6 +296,45 @@ final class AppState: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6, execute: work)
     }
 
+    // MARK: Claude Code usage
+
+    /// Rescans the transcripts off the main thread. Cheap after the first run, because each file is
+    /// only read from where the last scan stopped.
+    func refreshUsage(force: Bool = false) {
+        guard settings.trackUsage, !usageScanning else { return }
+        guard force || Date().timeIntervalSince(lastUsageScan) > 120 else { return }
+        usageScanning = true
+        lastUsageScan = Date()
+        let cache = AppState.defaultStoreURL?.deletingLastPathComponent().appendingPathComponent("usage-cache.json")
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let report = UsageScanner(root: UsageScanner.defaultRoot, cacheURL: cache).scan()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.usageScanning = false
+                if report != self.usage { self.usage = report }
+            }
+        }
+    }
+
+    /// Asks each agent for its quota. Each check costs that tool a request, so it is only done when
+    /// the Tally is actually on screen, and at most once every ten minutes.
+    func refreshLimits(force: Bool = false) {
+        guard !limitsChecking else { return }
+        guard force || Date().timeIntervalSince(lastLimitCheck) > 600 else { return }
+        limitsChecking = true
+        lastLimitCheck = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let readings = LimitsRunner.readAll()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.limitsChecking = false
+                self.limits = readings
+            }
+        }
+    }
+
+    func debugSet(limits r: [ProviderReading]) { limits = r }
+
     // MARK: Vitals
 
     private func sampleVitals() {
@@ -360,6 +413,8 @@ final class AppState: ObservableObject {
     func debugToast(gained: Bool, title: String? = nil) { toast = HonorToast(gained: gained, title: title) }
 
     func debugSet(renown: Double) { ledger.renown = renown }
+
+    func debugSet(usage r: UsageReport) { usage = r }
 
     func debugSet(sky phase: SkyPhase) { sky = phase }
 }

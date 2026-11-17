@@ -2,7 +2,7 @@ import SwiftUI
 import ServiceManagement
 import FrontierCore
 
-enum PopoverTab: String, CaseIterable { case camp = "Camp", ledger = "Ledger", wheel = "Wheel", settings = "Settings" }
+enum PopoverTab: String, CaseIterable { case camp = "Camp", ledger = "Ledger", wheel = "Wheel", tally = "Tally", settings = "Settings" }
 
 struct PopoverView: View {
     @ObservedObject var state: AppState
@@ -18,6 +18,7 @@ struct PopoverView: View {
                 case .camp: CampTab(state: state)
                 case .ledger: LedgerTab(state: state)
                 case .wheel: WheelTab(state: state, onOpenWheel: onOpenWheel)
+                case .tally: TallyTab(state: state)
                 case .settings: SettingsTab(state: state, onHotKeyChange: onHotKeyChange)
                 }
             }
@@ -41,7 +42,7 @@ struct PopoverView: View {
                 ForEach(PopoverTab.allCases, id: \.self) { t in
                     Button { tab = t } label: {
                         VStack(spacing: 5) {
-                            HUDLabel(text: t.rawValue, size: 12, color: tab == t ? Theme.ink : Theme.inkFaint)
+                            HUDLabel(text: t.rawValue, size: 10.5, color: tab == t ? Theme.ink : Theme.inkFaint)
                             Rectangle().fill(tab == t ? Theme.rustDark : .clear).frame(height: 2)
                         }
                         .frame(maxWidth: .infinity)
@@ -478,6 +479,186 @@ struct WheelTab: View {
     }
 }
 
+// MARK: Tally (how much quota is left)
+
+/// A quota window drawn as a ring, in the same language as the desktop cores: the ring is what is
+/// *left*, so a full ring is healthy and a nearly empty one is the warning.
+struct LimitRing: View {
+    let limit: UsageLimit
+    var size: CGFloat = 54
+
+    private var low: Bool { limit.percentLeft < 25 }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .stroke(Theme.paperEdge.opacity(0.8),
+                            style: StrokeStyle(lineWidth: 4, dash: low ? [4, 3] : []))
+                Circle()
+                    .trim(from: 0, to: max(0.004, limit.fractionLeft))
+                    .stroke(low ? Theme.rustDark : Theme.ink, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(limit.percentLeft)")
+                    .font(Theme.display(17, .heavy)).foregroundStyle(low ? Theme.rustDark : Theme.ink)
+            }
+            .frame(width: size, height: size)
+            HUDLabel(text: limit.shortLabel, size: 9, color: Theme.inkSoft)
+                .lineLimit(1).fixedSize()
+        }
+        .accessibilityElement()
+        .accessibilityLabel("\(limit.label): \(limit.percentLeft) percent left\(low ? ", low" : "")")
+    }
+}
+
+/// How much of each agent's quota is left, and when it refills.
+struct TallyTab: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if state.limits.isEmpty {
+                    VStack(spacing: 6) {
+                        Text(state.limitsChecking ? "Asking your agents\u{2026}" : "No readings yet.")
+                            .font(Theme.hand(22)).foregroundStyle(Theme.inkSoft)
+                        Text("Each check runs the tool's own usage command.")
+                            .font(Theme.body(12)).foregroundStyle(Theme.inkSoft).multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity).padding(.top, 50)
+                } else {
+                    ForEach(state.limits.filter(\.available)) { provider($0) }
+                    if state.limits.contains(where: { !$0.available }) {
+                        HUDLabel(text: "Not installed: " + state.limits.filter { !$0.available }
+                            .map(\.provider).joined(separator: ", "), size: 9, color: Theme.inkFaint)
+                    }
+                }
+
+                if state.settings.trackUsage, let r = state.usage, r.all.messages > 0 {
+                    SectionRule(title: "Tokens written")
+                    TokenSummary(report: r)
+                }
+
+                HStack(spacing: 10) {
+                    InkButton(title: state.limitsChecking ? "Checking\u{2026}" : "Check now") {
+                        state.refreshLimits(force: true)
+                    }
+                    if let checked = state.limits.compactMap(\.checked).max() {
+                        Text("as of \(checked.formatted(date: .omitted, time: .shortened))")
+                            .font(Theme.body(11.5)).foregroundStyle(Theme.inkFaint)
+                    }
+                }
+                .padding(.top, 2)
+                Text("A check runs each agent's own usage command, which costs that tool one request.")
+                    .font(Theme.body(11)).foregroundStyle(Theme.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 14)
+        }
+        .onAppear {
+            state.refreshLimits()
+            if state.settings.trackUsage { state.refreshUsage() }
+        }
+    }
+
+    @ViewBuilder
+    private func provider(_ r: ProviderReading) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            SectionRule(title: r.provider)
+            if !r.limits.isEmpty {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(r.limits) { LimitRing(limit: $0) }
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(r.limits) { l in
+                        if let resets = l.resets {
+                            Text("\(l.shortLabel) refills \(resets)")
+                                .font(Theme.body(11.5)).foregroundStyle(Theme.inkSoft).lineLimit(1)
+                        }
+                    }
+                }
+            } else if let problem = r.problem {
+                Text(problem).font(Theme.body(12.5)).foregroundStyle(problem == "no usage command" ? Theme.inkSoft : Theme.rustDark)
+                if problem == "no usage command" {
+                    Text("This tool has no command that reports quota.")
+                        .font(Theme.body(11)).foregroundStyle(Theme.inkFaint)
+                }
+            }
+            if let notice = r.notice {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 10)).foregroundStyle(Theme.rustDark)
+                    Text(notice).font(Theme.body(11.5)).foregroundStyle(Theme.rustDark)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 1)
+            }
+        }
+    }
+}
+
+/// The optional token breakdown, kept behind a setting now that the Tally leads with limits.
+struct TokenSummary: View {
+    let report: UsageReport
+
+    var body: some View {
+        let today = report.totals(sinceDaysAgo: 1)
+        let week = report.totals(sinceDaysAgo: 7)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 18) {
+                figure("Today", today)
+                figure("Last 7 days", week)
+                Spacer(minLength: 0)
+            }
+            Sparkline(days: report.recentDays(14))
+            ForEach(report.top(report.projects, 3), id: \.name) { row in
+                HStack {
+                    Text(row.name).font(Theme.body(12.5)).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    Text(formatTokens(row.totals.output)).font(Theme.body(12.5, .semibold)).monospacedDigit()
+                }
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.paperEdge.opacity(0.5)).frame(height: 1) }
+            }
+        }
+    }
+
+    private func figure(_ title: String, _ t: UsageTotals) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HUDLabel(text: title, size: 9, color: Theme.inkSoft)
+            Text(formatTokens(t.output)).font(Theme.display(24, .heavy)).foregroundStyle(Theme.ink)
+        }
+    }
+}
+
+/// Daily output tokens as ink bars, oldest on the left.
+struct Sparkline: View {
+    let days: [(day: String, totals: UsageTotals)]
+
+    var body: some View {
+        let peak = max(1, days.map(\.totals.output).max() ?? 1)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(days, id: \.day) { d in
+                    let share = Double(d.totals.output) / Double(peak)
+                    Rectangle()
+                        .fill(d.totals.output > 0 ? Theme.ink : Theme.paperEdge.opacity(0.5))
+                        // A day with any work at all keeps a visible stub, so "a little" reads as more than "none".
+                        .frame(height: max(d.totals.output > 0 ? 3 : 1, 40 * share))
+                        .help("\(d.day): \(formatTokens(d.totals.output)) output")
+                }
+            }
+            .frame(height: 40, alignment: .bottom)
+            HStack {
+                HUDLabel(text: "14 days", size: 9, color: Theme.inkFaint)
+                Spacer()
+                HUDLabel(text: "peak \(formatTokens(peak))", size: 9, color: Theme.inkFaint)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Daily output tokens over the last 14 days")
+    }
+}
+
 // MARK: Settings
 
 struct SettingsTab: View {
@@ -486,6 +667,7 @@ struct SettingsTab: View {
     @State private var launchAtLogin = LoginItem.isEnabled
     @State private var loginError: String?
     @State private var hotKeyTaken = false
+    @State private var mediaAllowed = MediaKeys.hasPermission
     private let displays = Displays.all()
 
     var body: some View {
@@ -512,6 +694,11 @@ struct SettingsTab: View {
                 PaperToggle(title: "Honor meter", isOn: $state.settings.showHonorHUD)
                 PaperToggle(title: "Visions", detail: "The stag when honor is good, the wolf when it is not", isOn: $state.settings.honorBackdrop)
                 PaperToggle(title: "Sky follows the clock", detail: "Dawn, day, dusk and night over the camp", isOn: $state.settings.skyFollowsClock)
+
+                SectionRule(title: "Tally")
+                PaperToggle(title: "Also count tokens written",
+                            detail: "Reads local Claude Code transcripts for token totals; content is never read",
+                            isOn: $state.settings.trackUsage)
                 if displays.count > 1 {
                     Picker(selection: $state.settings.display) {
                         Text("All displays").tag("all")
@@ -529,6 +716,34 @@ struct SettingsTab: View {
                     Text("Volume").font(Theme.body(14))
                     Slider(value: $state.settings.volume, in: 0...1).controlSize(.small)
                 }
+
+                SectionRule(title: "Gramophone")
+                HStack(spacing: 8) {
+                    Text("Playlist").font(Theme.body(14))
+                    TextField("", text: $state.settings.playlistURL,
+                              prompt: Text("music.youtube.com/\u{2026}").foregroundStyle(Theme.inkFaint))
+                        .textFieldStyle(.plain)
+                        .font(Theme.body(13))
+                        .padding(.horizontal, 7).padding(.vertical, 5)
+                        .overlay(Rectangle().stroke(Theme.paperEdge, lineWidth: 1))
+                }
+                if !mediaAllowed {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Play, skip and previous need Accessibility permission, or macOS drops them silently. Volume and mute work without it.")
+                            .font(Theme.body(11.5)).foregroundStyle(Theme.inkSoft)
+                            .fixedSize(horizontal: false, vertical: true)
+                        InkButton(title: "Grant media control") {
+                            MediaKeys.requestPermission()
+                            // The grant lands asynchronously, so look again shortly.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { mediaAllowed = MediaKeys.hasPermission }
+                        }
+                    }
+                } else {
+                    HUDLabel(text: "Media control granted", size: 10, color: Theme.inkSoft)
+                }
+                Text("Reinstalling Frontier revokes this: the app is signed afresh each build, so macOS treats it as a different app. Remove the old Frontier entry in System Settings before re-adding it.")
+                    .font(Theme.body(11)).foregroundStyle(Theme.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 SectionRule(title: "App wheel")
                 Picker(selection: $state.settings.hotKey) {

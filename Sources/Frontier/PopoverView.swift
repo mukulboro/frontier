@@ -510,7 +510,7 @@ struct SettingsTab: View {
                 SectionRule(title: "On the desktop")
                 PaperToggle(title: "Cores", detail: "Battery, signal, memory and CPU as rings", isOn: $state.settings.showCores)
                 PaperToggle(title: "Honor meter", isOn: $state.settings.showHonorHUD)
-                PaperToggle(title: "Visions", detail: "The stag at high honor, the wolf at low", isOn: $state.settings.honorBackdrop)
+                PaperToggle(title: "Visions", detail: "The stag when honor is good, the wolf when it is not", isOn: $state.settings.honorBackdrop)
                 PaperToggle(title: "Sky follows the clock", detail: "Dawn, day, dusk and night over the camp", isOn: $state.settings.skyFollowsClock)
                 if displays.count > 1 {
                     Picker(selection: $state.settings.display) {

@@ -43,15 +43,21 @@ func approx(_ a: Double, _ b: Double, _ eps: Double = 1e-9) -> Bool { abs(a - b)
     }
 
     @Test func moodThresholds() {
-        #expect(Honor.mood(0.40) == .stag)
-        #expect(Honor.mood(0.39) == .neutral)
-        #expect(Honor.mood(-0.40) == .wolf)
+        // The wallpaper changes exactly when the rank leaves UNDECIDED, in either direction.
+        #expect(Honor.mood(0) == .neutral)
+        #expect(Honor.mood(0.09) == .neutral && Honor.mood(-0.10) == .neutral)
+        #expect(Honor.mood(0.10) == .stag && Honor.mood(0.9) == .stag)
+        #expect(Honor.mood(-0.11) == .wolf && Honor.mood(-0.9) == .wolf)
+        #expect(Honor.mood(-0.37) == .wolf)                     // UNRELIABLE must show the wolf
+        for h in stride(from: -1.0, through: 1.0, by: 0.01) {
+            #expect((Honor.mood(h) == .neutral) == (Honor.rank(h) == .undecided))
+        }
         #expect(approx(Honor.decayed(0.8, days: 2), 0.8 * 0.95 * 0.95))
     }
 
-    @Test func fiveOnTimeTasksSummonTheStag() {
+    @Test func oneFinishedTaskSummonsTheStag() {
         var l = Ledger()
-        for i in 0..<5 {
+        for i in 0..<1 {
             let t = l.add("task \(i)", limit: 3600, now: t0)!
             l.complete(t.id, now: t0.addingTimeInterval(60))
         }

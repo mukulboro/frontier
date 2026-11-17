@@ -15,8 +15,6 @@ public enum HonorRank: String, CaseIterable, Sendable {
 public enum HonorMood: String, Sendable { case stag, wolf, neutral }
 
 public enum Honor {
-    public static let stagThreshold = 0.40
-    public static let wolfThreshold = -0.40
     public static let dailyDecay = 0.95
 
     /// Half-open ranges with an inclusive lower bound, evaluated top-down.
@@ -30,10 +28,15 @@ public enum Honor {
         return .lostToIt
     }
 
+    /// The desktop follows the rank the user can read: any rank on the good side of UNDECIDED shows
+    /// the stag, any rank on the bad side shows the wolf. (They used to have their own, stricter
+    /// cut-offs, which left the meter saying UNRELIABLE over an unchanged wallpaper.)
     public static func mood(_ h: Double) -> HonorMood {
-        if h >= stagThreshold { return .stag }
-        if h <= wolfThreshold { return .wolf }
-        return .neutral
+        switch rank(h) {
+        case .trueToTheirWord, .dependable, .fair: return .stag
+        case .undecided: return .neutral
+        case .unreliable, .givenToDrift, .lostToIt: return .wolf
+        }
     }
 
     /// Applies a change with diminishing returns when moving away from zero.

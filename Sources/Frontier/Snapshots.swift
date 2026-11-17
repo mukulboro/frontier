@@ -26,9 +26,37 @@ enum Snapshots {
         save("vision-stag", HonorArt.render(.stag, size: scene))
         save("vision-wolf", HonorArt.render(.wolf, size: scene))
 
+        // The camp under each sky, bare and fully built. (The fire itself is video; see campfire-* below.)
+        for phase in SkyPhase.allCases {
+            save("camp-\(phase.rawValue)", Scenery.campImage(size: scene, sky: phase, upgrades: phase == .night ? [] : CampUpgrade.allCases))
+        }
+
+        // The pocket watch at several points, enlarged, on light and dark menu bars.
+        let faces: [(Int, Bool, Bool)] = [(0, false, false), (30, false, false), (60, false, false), (95, false, false), (45, true, false), (70, false, true)]
+        let sheet = NSImage(size: NSSize(width: CGFloat(faces.count) * 80, height: 160))
+        sheet.lockFocus()
+        for (row, dark) in [(0, true), (1, false)] {
+            (dark ? NSColor(white: 0.14, alpha: 1) : NSColor(white: 0.92, alpha: 1)).setFill()
+            NSRect(x: 0, y: CGFloat(row) * 80, width: sheet.size.width, height: 80).fill()
+            for (i, f) in faces.enumerated() {
+                let face = WatchFace.image(step: f.0, paused: f.1, resting: f.2)
+                let rect = NSRect(x: CGFloat(i) * 80 + 13, y: CGFloat(row) * 80 + 13, width: 54, height: 54)
+                // Tint the template the way the menu bar would.
+                let tinted = Paint.image(size: rect.size, scale: 2) {
+                    face.draw(in: NSRect(origin: .zero, size: rect.size))
+                    (dark ? NSColor.white : NSColor.black).set()
+                    NSRect(origin: .zero, size: rect.size).fill(using: .sourceAtop)
+                }
+                tinted.draw(in: rect)
+            }
+        }
+        sheet.unlockFocus()
+        save("watch-faces", sheet)
+
         // Popover tabs, with a believable day in the ledger.
         let state = AppState(storeURL: nil, live: false)
         state.settings.wheelSlots = AppCatalog.defaultSlots
+        state.debugSet(renown: 4)
         state.addTask("Mend the north fence #ranch", limit: 3600)
         state.addTask("Write to Mary #letters", limit: 7200)
         state.addTask("Clean the rifles", limit: nil)
@@ -85,6 +113,7 @@ enum Snapshots {
         for (name, level, phase, clock) in [("campfire-full", 1.0, "Focus · Round 1 of 4", "24:51"),
                                             ("campfire-half", 0.5, "Focus · Round 2 of 4", "12:30"),
                                             ("campfire-embers", 0.04, "Focus · Round 4 of 4", "00:58")] {
+            fire.configure(sky: name == "campfire-full" ? .dusk : .night, upgrades: name == "campfire-embers" ? [] : CampUpgrade.allCases)
             fire.set(level: level, animated: false)
             fire.set(phase: phase, clock: clock)
             RunLoop.main.run(until: Date().addingTimeInterval(3.5))

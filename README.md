@@ -5,7 +5,9 @@ affiliated with Rockstar Games.
 
 | Piece | What it does |
 |---|---|
-| **Camp** (timer) | Pomodoro with adjustable focus / rest / rounds. While it runs, a campfire takes over the desktop and burns down with the time left, then rekindles through each rest. Optional crackle, and a guitar phrase when a phase ends. |
+| **Camp** (timer) | Pomodoro with adjustable focus / rest / rounds. While it runs, a campfire takes over the desktop and burns down with the time left, then rekindles through each rest. The sky over the camp follows your clock (dawn, day, dusk, night). Optional crackle, and a guitar phrase when a phase ends. |
+| **Pocket watch** | While a phase runs, the menu bar icon becomes a watch whose hand sweeps once per phase, with the time remaining shaded behind it. A rest has a dashed rim. Hover for the exact time; Settings can switch to a countdown, or both. |
+| **Camp upgrades** | Honor earned adds up to *renown*, which never fades. As it builds over weeks the camp gains a chopping block, lantern, tent, provisions and finally a wagon. |
 | **Ledger** (tasks) | Today's tasks with time limits and `#tags`. Finishing raises honor; honor slips as a task enters the last quarter of its time, and faster once it's overdue. Abandoning an open task costs honor too. |
 | **Visions** | High honor puts the stag on the desktop, low honor the wolf. |
 | **Wheel** | Hold `⌥ Tab`, point, release. Brings a running app forward (switching Spaces) or launches it. `E` or right-click re-equips a slot. The hub shows version, category, memory and uptime. |
@@ -30,12 +32,15 @@ macro whose plugin ships only with Xcode. See `scripts/sdk-args.sh`.
 ## Layout
 
 - `Sources/FrontierCore` — pure logic, no UI: `Honor`, `Ledger`/`TaskRules`, `PomodoroEngine`,
-  `WheelMath`, `VitalsMonitor`. Everything here is unit-tested.
+  `WheelMath`, `VitalsMonitor`, `SkyPhase`, `CampUpgrade`. Everything here is unit-tested.
 - `Sources/Frontier` — the app: `AppState` (single source of truth, owns the timers),
   `DesktopController` (per-display desktop windows), `Campfire`, `HonorArt`, `WheelController`,
   `PopoverView`, `FireAudio`, `Snapshots`.
 - `Sources/Frontier/Resources` — fonts, silhouettes and the campfire clip. Credits and licenses are
   in `Resources/Art/CREDITS.txt`.
+
+Useful when checking visuals: `FRONTIER_SKY=dawn|day|dusk|night` pins the sky, `--demo camp` starts
+with a fully built camp, and `FRONTIER_STATE=<path>` keeps a test run away from your real data.
 
 ## Notes on staying light
 

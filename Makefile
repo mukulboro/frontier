@@ -26,11 +26,11 @@ app: build
 	scripts/bundle.sh
 
 run: app
-	-pkill -x Frontier
+	-pkill -x Frontier && while pgrep -xq Frontier; do sleep 0.2; done; sleep 0.5
 	open build/Frontier.app
 
 install: app
-	-pkill -x Frontier
+	-pkill -x Frontier && while pgrep -xq Frontier; do sleep 0.2; done; sleep 0.5
 	rm -rf /Applications/Frontier.app
 	cp -R build/Frontier.app /Applications/Frontier.app
 	open /Applications/Frontier.app
